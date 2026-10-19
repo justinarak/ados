@@ -1,0 +1,11 @@
+name = "ados-edge-gateway"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+
+[vars]
+COOKIE_DOMAIN = ".brand.com"
+
+[[kv_namespaces]]
+binding = "ADOS_SESSION_KV"
+id = "00000000000000000000000000000000"
+preview_id = "00000000000000000000000000000000"

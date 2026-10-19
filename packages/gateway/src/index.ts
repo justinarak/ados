@@ -6,5 +6,6 @@ export * from "./auth/broker.js";
 export * from "./wire/logger.js";
 export * from "./ingest/cdm-normalizer.js";
 export * from "./audiences/sync-engine.js";
+export * from "./mutations/campaign-orchestrator.js";
 export * from "./cli.js";
 export * from "./app.js";

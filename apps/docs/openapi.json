@@ -1,0 +1,105 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AdOS Runtime Gateway API",
+    "version": "0.3.0-alpha.0",
+    "description": "Narrow-waist API proxy, signal linter, outage circuit breaker, and mutation guardrail engine for programmatic advertising platforms.",
+    "license": {
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Gateway health check",
+        "responses": {
+          "200": { "description": "Gateway is healthy" }
+        }
+      }
+    },
+    "/v1/ingest/pull": {
+      "post": {
+        "summary": "Quadrant 1: Normalize platform reporting rows into Core + Extension CDM",
+        "responses": {
+          "200": { "description": "Normalized CDM records" }
+        }
+      }
+    },
+    "/v1/audiences/sync": {
+      "post": {
+        "summary": "Quadrant 2: Compute local state audience deltas and dispatch ADD/REMOVE operations",
+        "responses": {
+          "200": { "description": "Audience sync summary and wire receipts" }
+        }
+      }
+    },
+    "/v1/signals/lint": {
+      "post": {
+        "summary": "Quadrant 3: Pre-flight conversion validation, PII normalization, and EMQ scoring",
+        "responses": {
+          "200": { "description": "EMQ lint report" }
+        }
+      }
+    },
+    "/v1/signals/dispatch": {
+      "post": {
+        "summary": "Quadrant 3: Stitch ephemeral session context, evaluate outage circuit breaker, and fan out conversion to ad platforms",
+        "responses": {
+          "200": { "description": "Dispatched across target ad platforms" },
+          "202": { "description": "Quarantined by statistical circuit breaker" }
+        }
+      }
+    },
+    "/v1/signals/replay": {
+      "post": {
+        "summary": "Quadrant 3: Paced backfill drain from quarantine buffer (30% quota share + >48h dedup filter)",
+        "responses": {
+          "200": { "description": "Paced replay summary" }
+        }
+      }
+    },
+    "/v1/mutations/budget": {
+      "post": {
+        "summary": "Quadrant 4: Mutate campaign daily budget within Tier 1 & Tier 2 blast-radius guardrails",
+        "responses": {
+          "200": { "description": "Mutation approved and executed" },
+          "403": { "description": "Blocked by blast-radius guardrail policy" }
+        }
+      }
+    },
+    "/v1/mutations/campaigns/draft": {
+      "post": {
+        "summary": "Quadrant 4: Stage a declarative Campaign -> TargetingGroup -> CreativeBinding tree in PAUSED mode",
+        "responses": {
+          "201": { "description": "Campaign draft staged and assets validated" },
+          "422": { "description": "Pre-flight creative spec or role authorization failure" }
+        }
+      }
+    },
+    "/v1/creatives/lint": {
+      "post": {
+        "summary": "Quadrant 4: Pre-flight inspection of creative asset aspect ratios, durations, and copy character limits",
+        "responses": {
+          "200": { "description": "Creative lint report" }
+        }
+      }
+    },
+    "/v1/health/signals": {
+      "get": {
+        "summary": "Observability: Query live EMQ health scores, email density ratios, and circuit breaker states",
+        "responses": {
+          "200": { "description": "Signal health telemetry report" }
+        }
+      }
+    },
+    "/v1/privacy/purge": {
+      "post": {
+        "summary": "GDPR Art. 17 / CCPA Cross-Platform Right to Erasure",
+        "responses": {
+          "200": { "description": "Purged across ephemeral caches and customer match lists" }
+        }
+      }
+    }
+  }
+}

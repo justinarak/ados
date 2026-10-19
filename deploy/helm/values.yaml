@@ -1,0 +1,24 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/justinarak/ados-gateway
+  pullPolicy: IfNotPresent
+  tag: "0.3.0-alpha.0"
+
+service:
+  type: ClusterIP
+  port: 8787
+
+env:
+  NODE_ENV: "production"
+  PORT: "8787"
+  STATE_DRIVER: "redis"
+  TELEMETRY_SINK: "s3"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi

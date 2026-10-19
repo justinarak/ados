@@ -5,10 +5,12 @@ import {
   createDefaultAdapterRegistry,
 } from "@ados/adapters";
 import {
+  type AdOSRole,
   type AudienceSyncRequest,
   type BudgetMutationRequest,
   BudgetMutationRequestSchema,
   type CDMRecord,
+  type CampaignTree,
   type CanonicalConversionEventInput,
   type CreativeLintRequest,
   type DeclarativeIngestionConfig,
@@ -40,6 +42,10 @@ import {
 import { normalizePlatformReportToCDM } from "./ingest/cdm-normalizer.js";
 import { type CreativeLintReport, lintCreativeSpecs } from "./linter/creative.js";
 import { type EMQLintReport, lintAndScoreConversion } from "./linter/emq.js";
+import {
+  type CampaignDraftOrchestrationResult,
+  stageCampaignTreeDraft,
+} from "./mutations/campaign-orchestrator.js";
 import {
   type CircuitBreakerConfig,
   type OutageInspectionDecision,
@@ -280,14 +286,30 @@ export class AdOSGateway {
 
   /**
    * Quadrant 4: Guardrailed Budget Mutation (`ados_mutate_budget`)
+   * Supports both Tier 1 Stateless Bounds and Tier 2 Stateful Cooldown/Daily Rate Limits via `@ados/state`.
    */
-  async mutateBudget(input: BudgetMutationRequest): Promise<{
+  async mutateBudget(
+    input: BudgetMutationRequest,
+    nowMs: number = Date.now()
+  ): Promise<{
     guardrail_evaluation: GuardrailEvaluationResult;
     mutation_result?: AdapterMutationResult;
     audit_receipt?: WireAuditReceipt;
   }> {
     const req = BudgetMutationRequestSchema.parse(input);
-    const evaluation = evaluateBudgetGuardrails(req, this.policy);
+    const rateLimitKey = `ados:ratelimit:${req.platform}:${req.account_id}:${req.campaign_id}`;
+    const rawState = await this.stateDriver.get(rateLimitKey);
+    const existingCounter = rawState
+      ? (JSON.parse(rawState) as { lastMutationMs: number; countToday: number })
+      : undefined;
+
+    const evaluation = evaluateBudgetGuardrails(
+      req,
+      this.policy,
+      existingCounter?.lastMutationMs,
+      existingCounter?.countToday ?? 0,
+      nowMs
+    );
 
     if (!evaluation.approved) {
       return {
@@ -297,6 +319,17 @@ export class AdOSGateway {
 
     const adapter = this.adapters[req.platform];
     const mutationResult = await adapter.mutateBudget(req);
+
+    if (!req.dry_run) {
+      await this.stateDriver.set(
+        rateLimitKey,
+        JSON.stringify({
+          lastMutationMs: nowMs,
+          countToday: (existingCounter?.countToday ?? 0) + 1,
+        }),
+        7200
+      );
+    }
 
     const receipt = await this.wireLogger.logReceipt({
       action_type: "BUDGET_MUTATION",
@@ -313,6 +346,16 @@ export class AdOSGateway {
       mutation_result: mutationResult,
       audit_receipt: receipt,
     };
+  }
+
+  /**
+   * Quadrant 4: Declarative Campaign Tree Draft Orchestrator (`Campaign -> TargetingGroup -> CreativeBinding`)
+   */
+  async stageCampaignDraft(
+    tree: CampaignTree,
+    callerRole: AdOSRole = "agent:campaign-builder"
+  ): Promise<CampaignDraftOrchestrationResult> {
+    return stageCampaignTreeDraft(tree, callerRole, this.wireLogger);
   }
 
   /**
@@ -434,7 +477,7 @@ export function createGatewayApp(gateway: AdOSGateway = new AdOSGateway()): Hono
     return c.json(summary, 200);
   });
 
-  // Quadrant 4: Mutations & Creative Linter
+  // Quadrant 4: Mutations, Campaign Tree Drafts & Creative Linter
   app.post("/v1/mutations/budget", async (c) => {
     const body = await c.req.json();
     const result = await gateway.mutateBudget(body);
@@ -442,6 +485,15 @@ export function createGatewayApp(gateway: AdOSGateway = new AdOSGateway()): Hono
       return c.json(result, 403);
     }
     return c.json(result, 200);
+  });
+
+  app.post("/v1/mutations/campaigns/draft", async (c) => {
+    const body = (await c.req.json()) as { tree: CampaignTree; role?: AdOSRole };
+    const result = await gateway.stageCampaignDraft(body.tree, body.role);
+    if (!result.approved) {
+      return c.json(result, 422);
+    }
+    return c.json(result, 201);
   });
 
   app.post("/v1/creatives/lint", async (c) => {

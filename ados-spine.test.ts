@@ -501,17 +501,78 @@ describe("AdOS Phase 1 & 2 Complete Spine (All 4 Quadrants + Resilience + CLI)",
       expect(vault.decryptToken(encrypted)).toBe("EAAGNO_GOD_TOKEN");
 
       const gateway = new AdOSGateway();
-      const approved = await gateway.mutateBudget({
-        platform: "meta",
-        account_id: "act_1029384756",
-        campaign_id: "cmp_prospecting_q4",
-        current_daily_budget_micros: 1_000_000_000,
-        new_daily_budget_micros: 1_100_000_000,
-        rationale: "ROAS exceeded target by 22% over trailing 7 days",
-        campaign_tags: [],
-        dry_run: false,
-      });
+      const t0Ms = 1776000000000;
+      const approved = await gateway.mutateBudget(
+        {
+          platform: "meta",
+          account_id: "act_1029384756",
+          campaign_id: "cmp_prospecting_q4",
+          current_daily_budget_micros: 1_000_000_000,
+          new_daily_budget_micros: 1_100_000_000,
+          rationale: "ROAS exceeded target by 22% over trailing 7 days",
+          campaign_tags: [],
+          dry_run: false,
+        },
+        t0Ms
+      );
       expect(approved.guardrail_evaluation.approved).toBe(true);
+
+      // Immediate second mutation 10 minutes later on the same campaign is blocked by 60m stateful cooldown
+      const cooldownBlocked = await gateway.mutateBudget(
+        {
+          platform: "meta",
+          account_id: "act_1029384756",
+          campaign_id: "cmp_prospecting_q4",
+          current_daily_budget_micros: 1_100_000_000,
+          new_daily_budget_micros: 1_150_000_000,
+          rationale: "Second budget bump within 10 minutes",
+          campaign_tags: [],
+          dry_run: false,
+        },
+        t0Ms + 10 * 60_000
+      );
+      expect(cooldownBlocked.guardrail_evaluation.approved).toBe(false);
+      expect(cooldownBlocked.guardrail_evaluation.violations[0]).toContain("Cooldown violation");
+    });
+
+    it("stages Campaign -> TargetingGroup -> CreativeBinding trees, transitions 6-state assets, and forces PAUSED for AI agents", async () => {
+      const gateway = new AdOSGateway();
+
+      // Agent tries to create a campaign with status: "ACTIVE" -> hard-overridden to "PAUSED"
+      const agentDraft = await gateway.stageCampaignDraft(
+        {
+          platform: "meta",
+          account_id: "act_1029384756",
+          name: "Q4 Autonomous Prospecting",
+          objective: "CONVERSIONS",
+          status: "ACTIVE",
+          targeting_groups: [
+            {
+              name: "Broad US 18-45",
+              daily_budget_micros: 250_000_000,
+              bid_strategy: "LOWEST_COST",
+              placements: ["meta_reels"],
+              creatives: [
+                {
+                  name: "Reels Hero 9x16",
+                  asset_url: "https://cdn.brand.com/hero_9x16.mp4",
+                  headline: "Engineered Comfort",
+                  primary_text: "Try risk-free for 30 days.",
+                  call_to_action: "SHOP_NOW",
+                  destination_url: "https://brand.com/shop",
+                  lifecycle_state: "QUEUED",
+                },
+              ],
+            },
+          ],
+        },
+        "agent:campaign-builder"
+      );
+
+      expect(agentDraft.approved).toBe(true);
+      expect(agentDraft.forced_paused_by_guardrail).toBe(true);
+      expect(agentDraft.enforced_status).toBe("PAUSED");
+      expect(agentDraft.asset_states["Reels Hero 9x16"]).toBe("READY");
     });
   });
 
