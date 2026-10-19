@@ -5,10 +5,13 @@ import {
   createDefaultAdapterRegistry,
 } from "@ados/adapters";
 import {
+  type AudienceSyncRequest,
   type BudgetMutationRequest,
   BudgetMutationRequestSchema,
+  type CDMRecord,
   type CanonicalConversionEventInput,
   type CreativeLintRequest,
+  type DeclarativeIngestionConfig,
   type GuardrailPolicyRule,
   GuardrailPolicyRuleSchema,
   type PlatformDestination,
@@ -27,15 +30,23 @@ import {
 } from "@ados/state";
 import { Hono } from "hono";
 import {
+  type PlatformAudienceSyncSummary,
+  executeAudienceSync,
+} from "./audiences/sync-engine.js";
+import {
   type GuardrailEvaluationResult,
   evaluateBudgetGuardrails,
 } from "./auth/broker.js";
+import { normalizePlatformReportToCDM } from "./ingest/cdm-normalizer.js";
 import { type CreativeLintReport, lintCreativeSpecs } from "./linter/creative.js";
 import { type EMQLintReport, lintAndScoreConversion } from "./linter/emq.js";
 import {
   type CircuitBreakerConfig,
   type OutageInspectionDecision,
+  type PacedBackfillOptions,
+  type PacedBackfillSummary,
   StatisticalCircuitBreaker,
+  drainQuarantineWithPacing,
 } from "./outage/circuit-breaker.js";
 import { FullDuplexWireLogger, buildComplianceSnapshot } from "./wire/logger.js";
 
@@ -139,14 +150,32 @@ export class AdOSGateway {
   }
 
   /**
-   * Tool 1: Pre-Flight Conversion Linting & EMQ Scoring (`ados_lint_conversion`)
+   * Quadrant 1: Normalize raw platform reporting rows into Core + Extension CDM records
+   */
+  normalizeReportToCDM(
+    platform: PlatformDestination,
+    rawRows: readonly Record<string, unknown>[],
+    config?: DeclarativeIngestionConfig
+  ): CDMRecord[] {
+    return normalizePlatformReportToCDM(platform, rawRows, config);
+  }
+
+  /**
+   * Quadrant 2: Audience Sync with Local State Delta Computation (\Delta_egress = S_target \setminus S_synced)
+   */
+  async syncAudience(request: AudienceSyncRequest): Promise<PlatformAudienceSyncSummary[]> {
+    return executeAudienceSync(request, this.stateDriver, this.wireLogger);
+  }
+
+  /**
+   * Quadrant 3: Pre-Flight Conversion Linting & EMQ Scoring (`ados_lint_conversion`)
    */
   lintConversion(input: CanonicalConversionEventInput): EMQLintReport {
     return lintAndScoreConversion(input);
   }
 
   /**
-   * Tool 2: Full Narrow-Waist Signal Dispatch (`ados_dispatch_conversion`)
+   * Quadrant 3: Full Narrow-Waist Signal Dispatch (`ados_dispatch_conversion`)
    */
   async dispatchConversion(
     input: CanonicalConversionEventInput,
@@ -236,7 +265,21 @@ export class AdOSGateway {
   }
 
   /**
-   * Tool 3: Guardrailed Budget Mutation (`ados_mutate_budget`)
+   * Section 5: Paced Backfill Replay (70% Live / 30% Backfill Quota Token Bucket)
+   */
+  async drainQuarantineReplay(options: PacedBackfillOptions = {}): Promise<PacedBackfillSummary> {
+    this.circuitBreaker.resetCircuit();
+    return drainQuarantineWithPacing(
+      this.quarantineBuffer,
+      async (rehydratedEvent, nowSeconds) => {
+        await this.dispatchConversion(rehydratedEvent, nowSeconds);
+      },
+      options
+    );
+  }
+
+  /**
+   * Quadrant 4: Guardrailed Budget Mutation (`ados_mutate_budget`)
    */
   async mutateBudget(input: BudgetMutationRequest): Promise<{
     guardrail_evaluation: GuardrailEvaluationResult;
@@ -273,14 +316,14 @@ export class AdOSGateway {
   }
 
   /**
-   * Tool 4: Pre-Flight Creative Spec Linter (`ados_lint_creative`)
+   * Quadrant 4: Pre-Flight Creative Spec Linter (`ados_lint_creative`)
    */
   lintCreative(input: CreativeLintRequest): CreativeLintReport {
     return lintCreativeSpecs(input);
   }
 
   /**
-   * Tool 5: Query Signal Health & Circuit Breaker Diagnostics (`ados_query_signal_health`)
+   * Observability: Query Signal Health & Circuit Breaker Diagnostics (`ados_query_signal_health`)
    */
   async querySignalHealth(
     accountId: string,
@@ -354,6 +397,25 @@ export function createGatewayApp(gateway: AdOSGateway = new AdOSGateway()): Hono
 
   app.get("/healthz", (c) => c.json({ status: "ok", service: "@ados/gateway" }));
 
+  // Quadrant 1: Ingestion & CDM Normalization
+  app.post("/v1/ingest/pull", async (c) => {
+    const body = (await c.req.json()) as {
+      platform: PlatformDestination;
+      rows: Record<string, unknown>[];
+      config?: DeclarativeIngestionConfig;
+    };
+    const cdmRecords = gateway.normalizeReportToCDM(body.platform, body.rows ?? [], body.config);
+    return c.json({ count: cdmRecords.length, records: cdmRecords }, 200);
+  });
+
+  // Quadrant 2: Audience Egress & Local State Delta Sync
+  app.post("/v1/audiences/sync", async (c) => {
+    const body = await c.req.json();
+    const summaries = await gateway.syncAudience(body);
+    return c.json({ summaries }, 200);
+  });
+
+  // Quadrant 3: Signals & CAPI
   app.post("/v1/signals/lint", async (c) => {
     const body = await c.req.json();
     const report = gateway.lintConversion(body);
@@ -366,6 +428,13 @@ export function createGatewayApp(gateway: AdOSGateway = new AdOSGateway()): Hono
     return c.json(result, result.status === "QUARANTINED" ? 202 : 200);
   });
 
+  app.post("/v1/signals/replay", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as PacedBackfillOptions;
+    const summary = await gateway.drainQuarantineReplay(body);
+    return c.json(summary, 200);
+  });
+
+  // Quadrant 4: Mutations & Creative Linter
   app.post("/v1/mutations/budget", async (c) => {
     const body = await c.req.json();
     const result = await gateway.mutateBudget(body);
@@ -381,6 +450,7 @@ export function createGatewayApp(gateway: AdOSGateway = new AdOSGateway()): Hono
     return c.json(report, 200);
   });
 
+  // Observability & GDPR Privacy Purge
   app.get("/v1/health/signals", async (c) => {
     const accountId = c.req.query("account_id") ?? "default";
     const platform = (c.req.query("platform") ?? "meta") as PlatformDestination;

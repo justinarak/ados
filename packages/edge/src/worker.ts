@@ -1,20 +1,32 @@
 import type { EphemeralSessionRecord, StateDriver } from "@ados/state";
 import { extractEdgeContext } from "./context.js";
+import {
+  type UpstreamFetchFn,
+  handleTagGatewayProxy,
+  matchTagGatewayRoute,
+} from "./tag-gateway.js";
 
 export interface EdgeWorkerEnv {
   stateDriver: StateDriver;
   cookieDomain?: string;
+  upstreamFetch?: UpstreamFetchFn;
 }
 
 /**
  * Cloudflare Worker / WinterCG Fetch Handler for `@ados/edge`:
- * - Mode A: First-Party Tag Gateway Proxy (`/ados/tag/*`)
+ * - Mode A: First-Party Tag Gateway Proxy (`/ados/tag/gtag/*`, `/ados/tag/meta/*`, `/ados/tag/tiktok/*`)
  * - Mode B & C: Session Context Hydration (`/ados/collect` or middleware pass-through)
  */
 export async function handleEdgeRequest(
   request: Request,
   env: EdgeWorkerEnv
 ): Promise<Response> {
+  const url = new URL(request.url);
+  const tagRoute = matchTagGatewayRoute(url.pathname);
+  if (tagRoute) {
+    return handleTagGatewayProxy(request, tagRoute, env, env.upstreamFetch);
+  }
+
   const extracted = extractEdgeContext(request, env.cookieDomain);
   const sessionKey = `ados:session:${extracted.ados_session_id}`;
 

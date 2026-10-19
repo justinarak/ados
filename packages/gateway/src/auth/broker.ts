@@ -4,6 +4,7 @@ import {
   type AdOSScope,
   type BudgetMutationRequest,
   type GuardrailPolicyRule,
+  type PlatformDestination,
   ROLE_DEFAULT_SCOPES,
 } from "@ados/schemas";
 
@@ -206,5 +207,73 @@ export class EncryptedTokenVault {
       decipher.final(),
     ]);
     return decrypted.toString("utf8");
+  }
+}
+
+export interface OAuthTokenPair {
+  access_token: string;
+  refresh_token: string;
+  expires_at_ms: number;
+}
+
+export type OAuthRefreshFn = (
+  platform: PlatformDestination,
+  accountId: string,
+  currentRefreshToken: string
+) => Promise<OAuthTokenPair>;
+
+/**
+ * Single-Flight OAuth2 Refresh Coordinator (Section 6):
+ * Prevents rotating refresh-token race conditions across concurrent gateway workers.
+ * If 10 concurrent requests hit an expired (or <5m from expiry) token for `(platform, accountId)`,
+ * only 1 upstream refresh call executes and all 10 requests resolve with the new token pair.
+ */
+export class SingleFlightOAuthCoordinator {
+  private readonly tokenStore = new Map<string, OAuthTokenPair>();
+  private readonly inFlightRefreshes = new Map<string, Promise<OAuthTokenPair>>();
+  private readonly expiryBufferMs: number;
+
+  constructor(
+    private readonly refreshFn: OAuthRefreshFn,
+    expiryBufferMs: number = 5 * 60 * 1000 // 5 minutes buffer before expiry
+  ) {
+    this.expiryBufferMs = expiryBufferMs;
+  }
+
+  seedToken(platform: PlatformDestination, accountId: string, token: OAuthTokenPair): void {
+    this.tokenStore.set(`${platform}:${accountId}`, token);
+  }
+
+  async getValidAccessToken(
+    platform: PlatformDestination,
+    accountId: string,
+    nowMs: number = Date.now()
+  ): Promise<string> {
+    const key = `${platform}:${accountId}`;
+    const current = this.tokenStore.get(key);
+    if (!current) {
+      throw new Error(`No OAuth token registered for ${key}`);
+    }
+
+    if (nowMs + this.expiryBufferMs < current.expires_at_ms) {
+      return current.access_token;
+    }
+
+    // Coalesce concurrent refreshes onto a single in-flight promise
+    let inFlight = this.inFlightRefreshes.get(key);
+    if (!inFlight) {
+      inFlight = this.refreshFn(platform, accountId, current.refresh_token)
+        .then((refreshed) => {
+          this.tokenStore.set(key, refreshed);
+          return refreshed;
+        })
+        .finally(() => {
+          this.inFlightRefreshes.delete(key);
+        });
+      this.inFlightRefreshes.set(key, inFlight);
+    }
+
+    const updated = await inFlight;
+    return updated.access_token;
   }
 }

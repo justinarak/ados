@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ados-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  ados-gateway:
+    image: node:22-alpine
+    container_name: ados-gateway
+    working_dir: /workspace
+    volumes:
+      - ../:/workspace
+    environment:
+      - NODE_ENV=development
+      - PORT=8787
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "8787:8787"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["npx", "tsx", "packages/gateway/src/cli.ts", "--help"]

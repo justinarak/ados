@@ -1,5 +1,6 @@
 import {
   type CanonicalConversionEvent,
+  type PlatformDestination,
   generateUuidV7,
 } from "@ados/schemas";
 import type { QuarantineBufferDriver, QuarantinedEventRecord } from "@ados/state";
@@ -62,6 +63,11 @@ export class StatisticalCircuitBreaker {
 
   resetCircuit(): void {
     this.circuitState = "CLOSED";
+    this.recentEmailPresence.length = 0;
+  }
+
+  enterPacedRecovery(): void {
+    this.circuitState = "PACED_RECOVERY";
     this.recentEmailPresence.length = 0;
   }
 
@@ -144,4 +150,88 @@ export class StatisticalCircuitBreaker {
       target_platforms: event.destinations,
     });
   }
+}
+
+export interface PacedBackfillOptions {
+  /** Total per-tick API quota across live + replay traffic */
+  maxTotalQuotaPerTick?: number;
+  /** Fraction of quota reserved for backfill replay (default 0.30 = 30% backfill, 70% live) */
+  backfillShareRatio?: number;
+  /** Current epoch timestamp in seconds for evaluating the 48h deduplication window */
+  nowEpochSeconds?: number;
+}
+
+export interface PacedBackfillSummary {
+  drainedCount: number;
+  replayedCount: number;
+  droppedExpiredDedupCount: number;
+  suppressedPlatformsByEvent: Record<string, PlatformDestination[]>;
+}
+
+const HOURS_48_SECONDS = 48 * 3600;
+
+/**
+ * Section 5, Failure Mode 2: Paced Backfill Controller
+ * Meters out quarantined/delayed conversion queues using a 70% Live / 30% Backfill token bucket,
+ * preserving original historical `timestamp` values and filtering out Meta/TikTok destinations
+ * if `now - event.timestamp > 48h` when `client_pixel_fired === true`.
+ */
+export async function drainQuarantineWithPacing(
+  quarantineBuffer: QuarantineBufferDriver,
+  replayHandler: (event: CanonicalConversionEvent, nowEpochSeconds: number) => Promise<void>,
+  options: PacedBackfillOptions = {}
+): Promise<PacedBackfillSummary> {
+  const maxQuota = options.maxTotalQuotaPerTick ?? 100;
+  const backfillRatio = options.backfillShareRatio ?? 0.3;
+  const maxReplayBatch = Math.max(1, Math.floor(maxQuota * backfillRatio));
+  const nowSeconds = options.nowEpochSeconds ?? Math.floor(Date.now() / 1000);
+
+  const drained = await quarantineBuffer.drain(maxReplayBatch);
+  let replayedCount = 0;
+  let droppedExpiredDedupCount = 0;
+  const suppressedPlatformsByEvent: Record<string, PlatformDestination[]> = {};
+
+  for (const record of drained) {
+    const { event } = record;
+    const ageSeconds = Math.max(0, nowSeconds - event.timestamp);
+    const suppressed: PlatformDestination[] = [];
+    const remainingDestinations: PlatformDestination[] = [];
+
+    for (const dest of event.destinations) {
+      if (
+        (dest === "meta" || dest === "tiktok") &&
+        ageSeconds > HOURS_48_SECONDS &&
+        event.click_context.client_pixel_fired
+      ) {
+        suppressed.push(dest);
+      } else {
+        remainingDestinations.push(dest);
+      }
+    }
+
+    if (suppressed.length > 0) {
+      suppressedPlatformsByEvent[event.event_id] = suppressed;
+    }
+
+    if (remainingDestinations.length === 0) {
+      droppedExpiredDedupCount++;
+      continue;
+    }
+
+    await replayHandler(
+      {
+        ...event,
+        destinations: remainingDestinations,
+      },
+      nowSeconds
+    );
+    replayedCount++;
+  }
+
+  return {
+    drainedCount: drained.length,
+    replayedCount,
+    droppedExpiredDedupCount,
+    suppressedPlatformsByEvent,
+  };
 }

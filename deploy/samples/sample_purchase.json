@@ -1,0 +1,35 @@
+{
+  "event_name": "Purchase",
+  "event_id": "01946a48-73b2-7c30-9b62-fa81023a4921",
+  "value": 189.5,
+  "currency": "USD",
+  "order_id": "ORD-2026-8891",
+  "environment": "production",
+  "user_data": {
+    "email": "customer@brand.com",
+    "phone": "+1 (415) 555-0192",
+    "first_name": "Jordan",
+    "last_name": "Taylor",
+    "city": "San Francisco",
+    "state": "CA",
+    "zip_code": "94107",
+    "country": "US",
+    "client_ip_address": "203.0.113.88",
+    "client_user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)"
+  },
+  "click_context": {
+    "fbp": "fb.1.1776092000.1122334455",
+    "fbc": "fb.1.1776092000.IwAR9988776655",
+    "gclid": "EAIaIQobChMI_sample_gclid_9911",
+    "ttclid": "E.C.P.sample_ttclid_2233",
+    "client_pixel_fired": true
+  },
+  "consent": {
+    "ad_storage": "granted",
+    "analytics_storage": "granted",
+    "ad_user_data": "granted",
+    "ad_personalization": "granted",
+    "gpc_detected": false
+  },
+  "destinations": ["meta", "google", "tiktok", "reddit"]
+}

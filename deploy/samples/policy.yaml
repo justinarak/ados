@@ -1,0 +1,29 @@
+version: "1.0"
+policies:
+  - id: "policy-autonomous-pacing-prod"
+    description: "Guardrails for AI agent budget pacing service"
+    subject: "agent:pacing-optimizer-v2"
+    role: "agent:pacing-optimizer"
+    allowed_scopes:
+      - "campaigns.pacing:mutate"
+      - "campaigns.status:pause"
+      - "analytics:read"
+    target_accounts:
+      meta: ["act_1029384756"]
+      google: ["customers/9876543210"]
+      tiktok: ["adv_5544332211"]
+      reddit: ["t2_99887766"]
+    guardrails:
+      budget_bounds:
+        min_daily_budget_micros: 10000000
+        absolute_daily_cap_micros: 5000000000 # $5,000 USD Max
+        require_rationale_min_length: 15
+      budget_delta_limits:
+        max_increase_percent_per_call: 15.0
+        max_decrease_percent_per_call: 30.0
+      rate_limits:
+        min_cooldown_minutes: 60
+        max_mutations_per_day: 12
+      protected_entities:
+        blocked_campaign_ids: ["cmp_core_brand_evergreen_01"]
+        require_manual_approval_tags: ["tier1-unlimited"]

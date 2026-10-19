@@ -1,9 +1,12 @@
 {
   "name": "@ados/gateway",
-  "version": "0.1.0-alpha.0",
+  "version": "0.2.0-alpha.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "ados": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

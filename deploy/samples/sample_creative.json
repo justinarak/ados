@@ -1,0 +1,12 @@
+{
+  "asset_url": "https://cdn.brand.com/assets/fall_launch_9x16.mp4",
+  "media_type": "video",
+  "width": 1080,
+  "height": 1920,
+  "duration_seconds": 25,
+  "target_placements": ["meta_reels", "tiktok_feed", "youtube_shorts"],
+  "copy_variations": {
+    "headlines": ["Fall Collection Now Live"],
+    "bodies": ["Discover engineered performance essentials with free 2-day shipping."]
+  }
+}
