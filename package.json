@@ -1,0 +1,20 @@
+{
+  "name": "ados-monorepo",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "description": "AdOS (Ad Operating System) — Open-core narrow-waist runtime engine, API proxy, and MCP server for programmatic advertising infrastructure",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "vitest run",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "zod": "^3.24.1"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
